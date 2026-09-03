@@ -1,0 +1,3 @@
+# Deepfake-Resistant Executive Transaction Authorization System
+
+This project is a deepfake-resistant executive transaction authorization system designed to prevent fraudulent high-value transfers by eliminating sole reliance on voice or video communications, which can be synthesized via deepfake technology. Instead of trusting the raw authenticity of audio or video channels alone, the system validates true transaction intent through a multi-layered defense architecture: evaluating request risk parameters with risk-based rules, scoring transcript text for coercive or high-urgency signals using a pressure-language ML scorer, and requiring mandatory out-of-band challenge verification delivered directly to the executive's registered device.
