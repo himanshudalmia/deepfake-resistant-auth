@@ -124,13 +124,3 @@ Pulled directly from the problem statement's stated success metrics.
   "prevented_fraudulent_value": 1850000.00
 }
 ```
-
----
-
-## Transport notes
-
-- Ingestion: `POST /requests` (section 1 in, section 3 out).
-- Executive approval: `POST /requests/{id}/respond` (section 4 in, updated section 3 broadcast out).
-- Live feed: WebSocket `/ws` — pushes section-3 events on both initial decision and challenge resolution (two events per high-risk request; one event for auto-approved ones).
-- History: `GET /history?limit=50`.
-- KPIs: `GET /stats`, polled every few seconds by the dashboard.

@@ -3,3 +3,8 @@ uvicorn[standard]
 pydantic
 redis
 psycopg2-binary
+pandas
+scikit-learn
+sentence-transformers
+joblib
+numpy
