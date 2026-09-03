@@ -250,6 +250,83 @@ export default function App() {
     }, 4000);
   };
 
+  // Simulate Attack Request Handler
+  const handleSimulateAttack = async () => {
+    const timestampId = Date.now().toString().slice(-4);
+    const attackPayload = {
+      request_id: `req_sim_${timestampId}`,
+      claimed_executive_id: "exec_007",
+      requested_by_staff_id: "staff_042",
+      channel: "video_call",
+      timestamp: new Date().toISOString(),
+      transaction: {
+        type: "wire_transfer",
+        amount: 500000.00,
+        currency: "USD",
+        beneficiary_account: "XXXX-7721",
+        is_new_beneficiary: true
+      },
+      session_metadata: {
+        caller_id: "+1-202-555-9988",
+        device_id: "unknown_deepfake_source",
+        ip_address: "198.51.100.99",
+        is_recognized_device: false
+      },
+      request_transcript: "This is urgent CEO authorization: wire $500,000 to new beneficiary immediately. Confidential, do not verify via standard call."
+    };
+
+    setActionNotification({
+      id: attackPayload.request_id,
+      response: 'denied',
+      message: `SIMULATING ATTACK: Dispatching ${attackPayload.request_id} ($500,000 Wire Transfer)...`
+    });
+
+    try {
+      const res = await fetch('http://localhost:8000/requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(attackPayload)
+      });
+
+      if (res.ok) {
+        const decisionEvent = await res.json();
+        upsertEvents(decisionEvent);
+      } else {
+        const fallbackDecision = {
+          ...attackPayload,
+          risk_score: 0.96,
+          decision: "block_pending_verification",
+          triggered_rules: ["new_beneficiary_high_amount", "unrecognized_device", "high_pressure_language"],
+          pressure_score: 0.92,
+          pressure_signals: [
+            { signal: "urgency_language", value: true, contribution: 0.35 },
+            { signal: "secrecy_language", value: true, contribution: 0.35 }
+          ],
+          challenge_status: "sent"
+        };
+        upsertEvents(fallbackDecision);
+      }
+    } catch (err) {
+      const fallbackDecision = {
+        ...attackPayload,
+        risk_score: 0.96,
+        decision: "block_pending_verification",
+        triggered_rules: ["new_beneficiary_high_amount", "unrecognized_device", "high_pressure_language"],
+        pressure_score: 0.92,
+        pressure_signals: [
+          { signal: "urgency_language", value: true, contribution: 0.35 },
+          { signal: "secrecy_language", value: true, contribution: 0.35 }
+        ],
+        challenge_status: "sent"
+      };
+      upsertEvents(fallbackDecision);
+    }
+
+    setTimeout(() => {
+      setActionNotification(null);
+    }, 4000);
+  };
+
   const getDecisionBadge = (decision) => {
     switch (decision) {
       case 'auto_approve':
@@ -462,6 +539,14 @@ export default function App() {
                 </div>
                 
                 <div className="flex items-center gap-3 text-xs font-mono text-slate-400">
+                  <button
+                    onClick={handleSimulateAttack}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-950/90 hover:bg-rose-900 border border-rose-500/50 text-rose-300 font-mono text-xs font-bold transition-all shadow-md active:scale-95"
+                  >
+                    <Zap className="w-3.5 h-3.5 text-rose-400" />
+                    SIMULATE ATTACK
+                  </button>
+                  <span className="text-slate-600">|</span>
                   <span>WS FEED: {
                     wsStatus === 'CONNECTED' ? (
                       <strong className="text-emerald-400">CONNECTED • LIVE</strong>

@@ -29,6 +29,117 @@ mock_stats = AggregateKPIs(
     prevented_fraudulent_value=1850000.00
 )
 
+# Seed initial history events for demo display
+def _seed_demo_events():
+    now_iso = datetime.now(timezone.utc)
+
+    req1 = AuthorizationRequest(
+        request_id="req_001",
+        claimed_executive_id="exec_007",
+        requested_by_staff_id="staff_042",
+        channel="video_call",
+        timestamp=now_iso,
+        transaction={
+            "type": "wire_transfer",
+            "amount": 250000.00,
+            "currency": "USD",
+            "beneficiary_account": "XXXX-9981",
+            "is_new_beneficiary": True
+        },
+        session_metadata={
+            "caller_id": "+1-202-555-0179",
+            "device_id": "unknown",
+            "ip_address": "198.51.100.20",
+            "is_recognized_device": False
+        },
+        request_transcript="This is urgent and confidential, I need this wired within the hour, don't loop in anyone else on this."
+    )
+    db_requests["req_001"] = req1
+    db_decisions["req_001"] = RiskDecisionEvent(
+        request_id="req_001",
+        risk_score=0.91,
+        decision="block_pending_verification",
+        triggered_rules=["new_beneficiary_high_amount", "unrecognized_device"],
+        pressure_score=0.88,
+        pressure_signals=[
+            PressureSignal(signal="urgency_language", value=True, contribution=0.30),
+            PressureSignal(signal="secrecy_language", value=True, contribution=0.35)
+        ],
+        challenge_status="sent",
+        timestamp=now_iso
+    )
+    db_challenges["req_001"] = "482913"
+
+    req2 = AuthorizationRequest(
+        request_id="req_002",
+        claimed_executive_id="exec_007",
+        requested_by_staff_id="staff_019",
+        channel="chat",
+        timestamp=now_iso,
+        transaction={
+            "type": "wire_transfer",
+            "amount": 4500.00,
+            "currency": "USD",
+            "beneficiary_account": "XXXX-1120",
+            "is_new_beneficiary": False
+        },
+        session_metadata={
+            "caller_id": "+1-202-555-0112",
+            "device_id": "dev_macbook_pro_07",
+            "ip_address": "198.51.100.45",
+            "is_recognized_device": True
+        },
+        request_transcript="Standard monthly vendor retainer payment for design services."
+    )
+    db_requests["req_002"] = req2
+    db_decisions["req_002"] = RiskDecisionEvent(
+        request_id="req_002",
+        risk_score=0.15,
+        decision="auto_approve",
+        triggered_rules=[],
+        pressure_score=0.10,
+        pressure_signals=[],
+        challenge_status="not_required",
+        timestamp=now_iso
+    )
+
+    req3 = AuthorizationRequest(
+        request_id="req_003",
+        claimed_executive_id="exec_003",
+        requested_by_staff_id="staff_088",
+        channel="email",
+        timestamp=now_iso,
+        transaction={
+            "type": "credential_reset",
+            "amount": 0,
+            "currency": "USD",
+            "beneficiary_account": "N/A",
+            "is_new_beneficiary": False
+        },
+        session_metadata={
+            "caller_id": "exec003@corp.internal",
+            "device_id": "dev_iphone_15",
+            "ip_address": "198.51.100.99",
+            "is_recognized_device": True
+        },
+        request_transcript="Need root credential reset for emergency server deployment before market open."
+    )
+    db_requests["req_003"] = req3
+    db_decisions["req_003"] = RiskDecisionEvent(
+        request_id="req_003",
+        risk_score=0.62,
+        decision="step_up_verification",
+        triggered_rules=["off_hours_request"],
+        pressure_score=0.55,
+        pressure_signals=[
+            PressureSignal(signal="deadline_pressure", value=True, contribution=0.40)
+        ],
+        challenge_status="approved",
+        timestamp=now_iso
+    )
+
+_seed_demo_events()
+
 from ml.scorer import analyze_request
 
 def evaluate_rules(request: AuthorizationRequest, pressure_score: float) -> List[str]:
