@@ -23,7 +23,7 @@ _HAS_SENTENCE_TRANSFORMERS = False
 try:
     from sentence_transformers import SentenceTransformer
     _HAS_SENTENCE_TRANSFORMERS = True
-except ImportError:
+except Exception:
     _HAS_SENTENCE_TRANSFORMERS = False
 
 

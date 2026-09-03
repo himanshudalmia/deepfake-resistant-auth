@@ -71,7 +71,7 @@ sample_requests = [
 ]
 
 def run_simulation():
-    print(f"--- AEGIS AUTH DEMO REQUEST SIMULATOR ---")
+    print("--- AEGIS AUTH DEMO REQUEST SIMULATOR ---")
     print(f"Targeting Backend: {BASE_URL}/requests\n")
     
     for i, req in enumerate(sample_requests, 1):
@@ -80,11 +80,11 @@ def run_simulation():
             res = requests.post(f"{BASE_URL}/requests", json=req)
             if res.status_code == 200:
                 data = res.json()
-                print(f"  ✅ SUCCESS: Decision={data.get('decision')}, Risk Score={data.get('risk_score')}, Challenge={data.get('challenge_status')}")
+                print(f"  [SUCCESS] Decision={data.get('decision')}, Risk Score={data.get('risk_score')}, Challenge={data.get('challenge_status')}")
             else:
-                print(f"  ❌ ERROR {res.status_code}: {res.text}")
+                print(f"  [ERROR {res.status_code}]: {res.text}")
         except Exception as e:
-            print(f"  ❌ CONNECTION ERROR: Could not connect to backend at {BASE_URL}. Ensure uvicorn server is running.")
+            print(f"  [CONNECTION ERROR]: Could not connect to backend at {BASE_URL}. Ensure uvicorn server is running.")
             break
         time.sleep(1.5)
 
