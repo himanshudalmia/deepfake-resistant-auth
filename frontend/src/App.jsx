@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   ShieldAlert, 
   ShieldCheck, 
@@ -13,129 +13,188 @@ import {
   XCircle, 
   Radio, 
   Lock, 
-  User, 
-  Activity, 
-  Send,
   Zap,
   Check,
-  X
+  X,
+  WifiOff,
+  RefreshCw
 } from 'lucide-react';
 
-const initialEvents = [
-  {
-    request_id: "req_001",
-    risk_score: 0.91,
-    decision: "block_pending_verification",
-    triggered_rules: ["new_beneficiary_high_amount", "unrecognized_device"],
-    pressure_score: 0.88,
-    pressure_signals: [
-      { signal: "urgency_language", value: true, contribution: 0.30 },
-      { signal: "secrecy_language", value: true, contribution: 0.35 }
-    ],
-    challenge_status: "sent",
-    timestamp: "2026-09-03T14:03:01Z",
-    claimed_executive_id: "exec_007",
-    requested_by_staff_id: "staff_042",
-    channel: "video_call",
-    transaction: {
-      type: "wire_transfer",
-      amount: 250000.00,
-      currency: "USD",
-      beneficiary_account: "XXXX-9981",
-      is_new_beneficiary: true
-    },
-    session_metadata: {
-      caller_id: "+1-202-555-0179",
-      device_id: "unknown",
-      ip_address: "198.51.100.20",
-      is_recognized_device: false
-    },
-    request_transcript: "This is urgent and confidential, I need this wired within the hour, don't loop in anyone else on this."
-  },
-  {
-    request_id: "req_002",
-    risk_score: 0.15,
-    decision: "auto_approve",
-    triggered_rules: [],
-    pressure_score: 0.10,
-    pressure_signals: [],
-    challenge_status: "not_required",
-    timestamp: "2026-09-03T13:50:00Z",
-    claimed_executive_id: "exec_007",
-    requested_by_staff_id: "staff_019",
-    channel: "chat",
-    transaction: {
-      type: "wire_transfer",
-      amount: 4500.00,
-      currency: "USD",
-      beneficiary_account: "XXXX-1120",
-      is_new_beneficiary: false
-    },
-    session_metadata: {
-      caller_id: "+1-202-555-0112",
-      device_id: "dev_macbook_pro_07",
-      ip_address: "198.51.100.45",
-      is_recognized_device: true
-    },
-    request_transcript: "Standard monthly vendor retainer payment for design services."
-  },
-  {
-    request_id: "req_003",
-    risk_score: 0.62,
-    decision: "step_up_verification",
-    triggered_rules: ["off_hours_request"],
-    pressure_score: 0.55,
-    pressure_signals: [
-      { signal: "deadline_pressure", value: true, contribution: 0.40 }
-    ],
-    challenge_status: "approved",
-    timestamp: "2026-09-03T02:15:00Z",
-    claimed_executive_id: "exec_003",
-    requested_by_staff_id: "staff_088",
-    channel: "email",
-    transaction: {
-      type: "credential_reset",
-      amount: 0,
-      currency: "USD",
-      beneficiary_account: "N/A",
-      is_new_beneficiary: false
-    },
-    session_metadata: {
-      caller_id: "exec003@corp.internal",
-      device_id: "dev_iphone_15",
-      ip_address: "198.51.100.99",
-      is_recognized_device: true
-    },
-    request_transcript: "Need root credential reset for emergency server deployment before market open."
-  }
-];
-
-const mockStats = {
-  total_requests: 214,
-  attack_block_rate: 0.94,
-  legitimate_approval_success_rate: 0.98,
-  false_challenge_rate: 0.06,
-  avg_verification_time_seconds: 42,
-  prevented_fraudulent_value: 1850000.00
+const INITIAL_STATS = {
+  total_requests: 0,
+  attack_block_rate: 0,
+  legitimate_approval_success_rate: 0,
+  false_challenge_rate: 0,
+  avg_verification_time_seconds: 0,
+  prevented_fraudulent_value: 0
 };
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('soc'); // 'soc' | 'exec'
-  const [events, setEvents] = useState(initialEvents);
+  
+  // Events state stored as map of request_id -> event object, and order array of request_ids
+  const [eventsById, setEventsById] = useState({});
+  const [eventOrder, setEventOrder] = useState([]);
+  
+  const [stats, setStats] = useState(INITIAL_STATS);
+  const [wsStatus, setWsStatus] = useState('CONNECTING'); // 'CONNECTING' | 'CONNECTED' | 'DISCONNECTED'
   const [expandedRequestId, setExpandedRequestId] = useState(null);
   const [actionNotification, setActionNotification] = useState(null);
 
+  const wsRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
+
+  // Upsert single event or array of events cleanly maintaining order (newest on top)
+  const upsertEvents = (newEvents) => {
+    const list = Array.isArray(newEvents) ? newEvents : [newEvents];
+    if (list.length === 0) return;
+
+    setEventsById(prev => {
+      const next = { ...prev };
+      list.forEach(evt => {
+        if (!evt || !evt.request_id) return;
+        const existing = next[evt.request_id] || {};
+        next[evt.request_id] = { ...existing, ...evt };
+      });
+      return next;
+    });
+
+    setEventOrder(prevOrder => {
+      let nextOrder = [...prevOrder];
+      list.forEach(evt => {
+        if (!evt || !evt.request_id) return;
+        if (!nextOrder.includes(evt.request_id)) {
+          nextOrder = [evt.request_id, ...nextOrder];
+        }
+      });
+      return nextOrder;
+    });
+  };
+
+  // 1. Fetch History on Mount (http://localhost:8000/history?limit=50)
+  useEffect(() => {
+    const fetchHistory = async () => {
+      try {
+        const res = await fetch('http://localhost:8000/history?limit=50');
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data)) {
+            upsertEvents(data);
+          }
+        }
+      } catch (err) {
+        console.warn('Backend history endpoint unavailable:', err.message);
+      }
+    };
+
+    fetchHistory();
+  }, []);
+
+  // 2. Poll Stats every 5 seconds (http://localhost:8000/stats)
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        const res = await fetch('http://localhost:8000/stats');
+        if (res.ok) {
+          const data = await res.json();
+          setStats(data);
+        }
+      } catch (err) {
+        console.warn('Backend stats endpoint unavailable:', err.message);
+      }
+    };
+
+    fetchStats();
+    const intervalId = setInterval(fetchStats, 5000);
+
+    return () => clearInterval(intervalId);
+  }, []);
+
+  // 3. WebSocket Connection (ws://localhost:8000/ws) with Auto-reconnect
+  useEffect(() => {
+    let isComponentMounted = true;
+
+    const connectWS = () => {
+      if (!isComponentMounted) return;
+      
+      setWsStatus('CONNECTING');
+      try {
+        const socket = new WebSocket('ws://localhost:8000/ws');
+        wsRef.current = socket;
+
+        socket.onopen = () => {
+          if (!isComponentMounted) return;
+          console.log('WebSocket connected to ws://localhost:8000/ws');
+          setWsStatus('CONNECTED');
+        };
+
+        socket.onmessage = (event) => {
+          if (!isComponentMounted) return;
+          try {
+            const data = JSON.parse(event.data);
+            if (data && data.request_id) {
+              upsertEvents(data);
+            }
+          } catch (e) {
+            console.error('Failed to parse WebSocket JSON payload:', e);
+          }
+        };
+
+        socket.onerror = (error) => {
+          if (!isComponentMounted) return;
+          console.warn('WebSocket connection error:', error);
+          setWsStatus('DISCONNECTED');
+        };
+
+        socket.onclose = () => {
+          if (!isComponentMounted) return;
+          console.warn('WebSocket connection closed.');
+          setWsStatus('DISCONNECTED');
+
+          reconnectTimeoutRef.current = setTimeout(() => {
+            if (isComponentMounted) {
+              connectWS();
+            }
+          }, 4000);
+        };
+      } catch (err) {
+        console.warn('WebSocket init exception:', err);
+        setWsStatus('DISCONNECTED');
+        reconnectTimeoutRef.current = setTimeout(() => {
+          if (isComponentMounted) {
+            connectWS();
+          }
+        }, 4000);
+      }
+    };
+
+    connectWS();
+
+    return () => {
+      isComponentMounted = false;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, []);
+
+  // Executive Device Local Action Handler
   const handleDecision = (requestId, response) => {
-    setEvents(prev => prev.map(evt => {
-      if (evt.request_id === requestId) {
-        return {
-          ...evt,
+    setEventsById(prev => {
+      const existing = prev[requestId];
+      if (!existing) return prev;
+      return {
+        ...prev,
+        [requestId]: {
+          ...existing,
           challenge_status: response === 'approved' ? 'approved' : 'denied',
           decision: response === 'approved' ? 'step_up_approved' : 'blocked'
-        };
-      }
-      return evt;
-    }));
+        }
+      };
+    });
 
     setActionNotification({
       id: requestId,
@@ -209,7 +268,8 @@ export default function App() {
     }
   };
 
-  const pendingChallenges = events.filter(e => e.challenge_status === 'sent');
+  const eventsList = eventOrder.map(id => eventsById[id]).filter(Boolean);
+  const pendingChallenges = eventsList.filter(e => e.challenge_status === 'sent');
 
   return (
     <div className="min-h-screen bg-[#07090e] text-slate-100 flex flex-col selection:bg-cyan-500/30">
@@ -292,8 +352,8 @@ export default function App() {
                   <ShieldAlert className="w-4 h-4 text-emerald-400" />
                 </div>
                 <div className="mt-3 flex items-baseline justify-between">
-                  <span className="text-2xl font-bold font-mono text-emerald-400">{(mockStats.attack_block_rate * 100).toFixed(0)}%</span>
-                  <span className="text-[10px] font-mono text-emerald-500/80 bg-emerald-950/50 px-1.5 py-0.5 rounded border border-emerald-800/40">+2.4% vs baseline</span>
+                  <span className="text-2xl font-bold font-mono text-emerald-400">{(stats.attack_block_rate * 100).toFixed(0)}%</span>
+                  <span className="text-[10px] font-mono text-emerald-500/80 bg-emerald-950/50 px-1.5 py-0.5 rounded border border-emerald-800/40">Target &gt;90%</span>
                 </div>
               </div>
 
@@ -303,7 +363,7 @@ export default function App() {
                   <ShieldCheck className="w-4 h-4 text-cyan-400" />
                 </div>
                 <div className="mt-3 flex items-baseline justify-between">
-                  <span className="text-2xl font-bold font-mono text-cyan-400">{(mockStats.legitimate_approval_success_rate * 100).toFixed(0)}%</span>
+                  <span className="text-2xl font-bold font-mono text-cyan-400">{(stats.legitimate_approval_success_rate * 100).toFixed(0)}%</span>
                   <span className="text-[10px] font-mono text-slate-400">Low Friction</span>
                 </div>
               </div>
@@ -314,7 +374,7 @@ export default function App() {
                   <AlertTriangle className="w-4 h-4 text-amber-400" />
                 </div>
                 <div className="mt-3 flex items-baseline justify-between">
-                  <span className="text-2xl font-bold font-mono text-amber-400">{(mockStats.false_challenge_rate * 100).toFixed(0)}%</span>
+                  <span className="text-2xl font-bold font-mono text-amber-400">{(stats.false_challenge_rate * 100).toFixed(0)}%</span>
                   <span className="text-[10px] font-mono text-emerald-400">Target &lt;8.0%</span>
                 </div>
               </div>
@@ -325,7 +385,7 @@ export default function App() {
                   <Clock className="w-4 h-4 text-indigo-400" />
                 </div>
                 <div className="mt-3 flex items-baseline justify-between">
-                  <span className="text-2xl font-bold font-mono text-indigo-300">{mockStats.avg_verification_time_seconds}s</span>
+                  <span className="text-2xl font-bold font-mono text-indigo-300">{stats.avg_verification_time_seconds}s</span>
                   <span className="text-[10px] font-mono text-slate-400">Out-of-band OTP</span>
                 </div>
               </div>
@@ -337,7 +397,7 @@ export default function App() {
                 </div>
                 <div className="mt-3 flex items-baseline justify-between">
                   <span className="text-xl font-bold font-mono text-white">
-                    ${mockStats.prevented_fraudulent_value.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    ${(stats.prevented_fraudulent_value || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                   </span>
                 </div>
               </div>
@@ -346,163 +406,192 @@ export default function App() {
 
             {/* Live Authorization Stream Section */}
             <div className="bg-[#0b0f19] border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
-              <div className="p-4 border-b border-slate-800/80 bg-slate-900/40 flex items-center justify-between">
+              <div className="p-4 border-b border-slate-800/80 bg-slate-900/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+                  <div className={`w-2.5 h-2.5 rounded-full ${
+                    wsStatus === 'CONNECTED' ? 'bg-emerald-500 animate-ping' :
+                    wsStatus === 'CONNECTING' ? 'bg-amber-500 animate-pulse' : 'bg-rose-500'
+                  }`} />
                   <h2 className="font-mono text-sm font-semibold tracking-wider text-slate-200 uppercase flex items-center gap-2">
                     <Radio className="w-4 h-4 text-cyan-400" />
                     LIVE AUTHORIZATION REQUEST STREAM
                   </h2>
                 </div>
+                
                 <div className="flex items-center gap-3 text-xs font-mono text-slate-400">
-                  <span>WS FEED: <strong className="text-emerald-400">CONNECTED</strong></span>
+                  <span>WS FEED: {
+                    wsStatus === 'CONNECTED' ? (
+                      <strong className="text-emerald-400">CONNECTED • LIVE</strong>
+                    ) : wsStatus === 'CONNECTING' ? (
+                      <strong className="text-amber-400">CONNECTING...</strong>
+                    ) : (
+                      <strong className="text-rose-400 flex-inline items-center gap-1">
+                        <WifiOff className="w-3 h-3 inline mr-1" />
+                        DISCONNECTED (BACKEND OFFLINE)
+                      </strong>
+                    )
+                  }</span>
                   <span className="text-slate-600">|</span>
-                  <span>TOTAL REQUESTS: <strong className="text-white">{mockStats.total_requests}</strong></span>
+                  <span>FEED COUNT: <strong className="text-white">{eventsList.length}</strong></span>
                 </div>
               </div>
 
               {/* Feed List */}
-              <div className="divide-y divide-slate-800/60">
-                {events.map((evt) => {
-                  const isExpanded = expandedRequestId === evt.request_id;
-                  const riskColorClass = getRiskColor(evt.risk_score);
+              {eventsList.length > 0 ? (
+                <div className="divide-y divide-slate-800/60">
+                  {eventsList.map((evt) => {
+                    const isExpanded = expandedRequestId === evt.request_id;
+                    const riskColorClass = getRiskColor(evt.risk_score || 0);
 
-                  return (
-                    <div key={evt.request_id} className="transition-colors hover:bg-slate-900/40">
-                      {/* Primary Summary Row */}
-                      <div 
-                        onClick={() => setExpandedRequestId(isExpanded ? null : evt.request_id)}
-                        className="p-4 cursor-pointer flex flex-col md:flex-row md:items-center justify-between gap-4"
-                      >
-                        {/* ID, Risk Bar & Basic Info */}
-                        <div className="flex items-center gap-4 min-w-[280px]">
-                          <div className="text-slate-500 hover:text-slate-300 transition-colors">
-                            {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
-                          </div>
-
-                          <div>
-                            <div className="flex items-center gap-2 font-mono text-sm font-bold text-cyan-300">
-                              <span>{evt.request_id}</span>
-                              <span className="text-xs font-normal text-slate-500 font-mono">
-                                {new Date(evt.timestamp).toLocaleTimeString()}
-                              </span>
+                    return (
+                      <div key={evt.request_id} className="transition-colors hover:bg-slate-900/40">
+                        {/* Primary Summary Row */}
+                        <div 
+                          onClick={() => setExpandedRequestId(isExpanded ? null : evt.request_id)}
+                          className="p-4 cursor-pointer flex flex-col md:flex-row md:items-center justify-between gap-4"
+                        >
+                          {/* ID, Risk Bar & Basic Info */}
+                          <div className="flex items-center gap-4 min-w-[280px]">
+                            <div className="text-slate-500 hover:text-slate-300 transition-colors">
+                              {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
                             </div>
-                            <div className="text-xs text-slate-400 mt-0.5">
-                              {evt.transaction ? `${evt.transaction.type.toUpperCase()} • $${evt.transaction.amount.toLocaleString()}` : 'EXEC AUTH'}
+
+                            <div>
+                              <div className="flex items-center gap-2 font-mono text-sm font-bold text-cyan-300">
+                                <span>{evt.request_id}</span>
+                                {evt.timestamp && (
+                                  <span className="text-xs font-normal text-slate-500 font-mono">
+                                    {new Date(evt.timestamp).toLocaleTimeString()}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs text-slate-400 mt-0.5">
+                                {evt.transaction ? `${(evt.transaction.type || 'REQUEST').toUpperCase()} • $${(evt.transaction.amount || 0).toLocaleString()}` : 'EXEC TRANSACTION AUTH'}
+                              </div>
                             </div>
                           </div>
-                        </div>
 
-                        {/* Risk Score Indicator */}
-                        <div className="flex items-center gap-3 w-48">
-                          <div className="flex-1 bg-slate-800 h-2 rounded-full overflow-hidden border border-slate-700">
-                            <div 
-                              className={`h-full ${riskColorClass.split(' ')[1]}`} 
-                              style={{ width: `${evt.risk_score * 100}%` }}
-                            />
-                          </div>
-                          <span className={`font-mono text-xs font-bold w-12 text-right ${riskColorClass.split(' ')[0]}`}>
-                            {(evt.risk_score * 100).toFixed(0)}%
-                          </span>
-                        </div>
-
-                        {/* Decision & Status Badges */}
-                        <div className="flex items-center gap-3">
-                          {getDecisionBadge(evt.decision)}
-                          {getChallengeBadge(evt.challenge_status)}
-                        </div>
-
-                        {/* Triggered Rules Tags */}
-                        <div className="flex flex-wrap gap-1 max-w-xs">
-                          {evt.triggered_rules.length > 0 ? (
-                            evt.triggered_rules.map(rule => (
-                              <span key={rule} className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-amber-300 border border-amber-800/40">
-                                {rule}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-900 text-slate-500 border border-slate-800">
-                              NO RULES FIRED
+                          {/* Risk Score Indicator */}
+                          <div className="flex items-center gap-3 w-48">
+                            <div className="flex-1 bg-slate-800 h-2 rounded-full overflow-hidden border border-slate-700">
+                              <div 
+                                className={`h-full ${riskColorClass.split(' ')[1]}`} 
+                                style={{ width: `${(evt.risk_score || 0) * 100}%` }}
+                              />
+                            </div>
+                            <span className={`font-mono text-xs font-bold w-12 text-right ${riskColorClass.split(' ')[0]}`}>
+                              {((evt.risk_score || 0) * 100).toFixed(0)}%
                             </span>
-                          )}
-                        </div>
-                      </div>
+                          </div>
 
-                      {/* Expandable Risk Breakdown Panel */}
-                      {isExpanded && (
-                        <div className="px-6 py-5 bg-[#090d15] border-t border-b border-slate-800/80 space-y-4">
-                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                            
-                            {/* Left: ML Pressure Signals Breakdown */}
-                            <div className="space-y-3">
-                              <div className="flex items-center justify-between">
-                                <h4 className="text-xs font-mono font-semibold tracking-wider text-cyan-400 uppercase flex items-center gap-1.5">
-                                  <Zap className="w-3.5 h-3.5" />
-                                  PRESSURE-LANGUAGE ML BREAKDOWN
-                                </h4>
-                                <span className="font-mono text-xs text-slate-400">
-                                  Overall Score: <strong className="text-amber-400">{(evt.pressure_score * 100).toFixed(0)}%</strong>
+                          {/* Decision & Status Badges */}
+                          <div className="flex items-center gap-3">
+                            {getDecisionBadge(evt.decision)}
+                            {getChallengeBadge(evt.challenge_status)}
+                          </div>
+
+                          {/* Triggered Rules Tags */}
+                          <div className="flex flex-wrap gap-1 max-w-xs">
+                            {evt.triggered_rules && evt.triggered_rules.length > 0 ? (
+                              evt.triggered_rules.map(rule => (
+                                <span key={rule} className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-amber-300 border border-amber-800/40">
+                                  {rule}
                                 </span>
-                              </div>
-
-                              {evt.pressure_signals && evt.pressure_signals.length > 0 ? (
-                                <div className="space-y-2 bg-[#0c111c] p-3 rounded-lg border border-slate-800">
-                                  {evt.pressure_signals.map(sig => (
-                                    <div key={sig.signal} className="space-y-1">
-                                      <div className="flex justify-between text-xs font-mono">
-                                        <span className="text-slate-300">{sig.signal}</span>
-                                        <span className="text-amber-400">+{(sig.contribution * 100).toFixed(0)}% risk</span>
-                                      </div>
-                                      <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-                                        <div 
-                                          className="h-full bg-gradient-to-r from-amber-500 to-rose-500 rounded-full" 
-                                          style={{ width: `${Math.min(sig.contribution * 200, 100)}%` }}
-                                        />
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <div className="p-3 bg-[#0c111c] rounded-lg border border-slate-800/80 text-xs text-slate-500 font-mono">
-                                  No coercive language patterns detected in transcript.
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Right: Session Metadata & Transcript Context */}
-                            <div className="space-y-3">
-                              <h4 className="text-xs font-mono font-semibold tracking-wider text-slate-400 uppercase flex items-center gap-1.5">
-                                <Lock className="w-3.5 h-3.5 text-indigo-400" />
-                                SESSION METADATA & TRANSCRIPT
-                              </h4>
-
-                              <div className="bg-[#0c111c] p-3 rounded-lg border border-slate-800 space-y-2 text-xs font-mono">
-                                <div className="grid grid-cols-2 gap-2 text-slate-400 pb-2 border-b border-slate-800">
-                                  <div>Claimed Exec: <span className="text-slate-200">{evt.claimed_executive_id}</span></div>
-                                  <div>Staff ID: <span className="text-slate-200">{evt.requested_by_staff_id}</span></div>
-                                  <div>Channel: <span className="text-cyan-400">{evt.channel}</span></div>
-                                  <div>Device: <span className={evt.session_metadata?.is_recognized_device ? "text-emerald-400" : "text-rose-400"}>
-                                    {evt.session_metadata?.device_id || "Unknown"}
-                                  </span></div>
-                                </div>
-
-                                <div className="pt-1">
-                                  <div className="text-[11px] text-slate-500 uppercase mb-1">Captured Communication Transcript</div>
-                                  <blockquote className="italic text-slate-300 bg-slate-900/80 p-2 rounded border border-slate-800">
-                                    "{evt.request_transcript}"
-                                  </blockquote>
-                                </div>
-                              </div>
-                            </div>
-
+                              ))
+                            ) : (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-900 text-slate-500 border border-slate-800">
+                                NO RULES FIRED
+                              </span>
+                            )}
                           </div>
                         </div>
-                      )}
 
-                    </div>
-                  );
-                })}
-              </div>
+                        {/* Expandable Risk Breakdown Panel */}
+                        {isExpanded && (
+                          <div className="px-6 py-5 bg-[#090d15] border-t border-b border-slate-800/80 space-y-4">
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                              
+                              {/* Left: ML Pressure Signals Breakdown */}
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <h4 className="text-xs font-mono font-semibold tracking-wider text-cyan-400 uppercase flex items-center gap-1.5">
+                                    <Zap className="w-3.5 h-3.5" />
+                                    PRESSURE-LANGUAGE ML BREAKDOWN
+                                  </h4>
+                                  <span className="font-mono text-xs text-slate-400">
+                                    Pressure Score: <strong className="text-amber-400">{((evt.pressure_score || 0) * 100).toFixed(0)}%</strong>
+                                  </span>
+                                </div>
+
+                                {evt.pressure_signals && evt.pressure_signals.length > 0 ? (
+                                  <div className="space-y-2 bg-[#0c111c] p-3 rounded-lg border border-slate-800">
+                                    {evt.pressure_signals.map((sig, i) => (
+                                      <div key={sig.signal || i} className="space-y-1">
+                                        <div className="flex justify-between text-xs font-mono">
+                                          <span className="text-slate-300">{sig.signal}</span>
+                                          <span className="text-amber-400">+{(sig.contribution * 100).toFixed(0)}% risk</span>
+                                        </div>
+                                        <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                                          <div 
+                                            className="h-full bg-gradient-to-r from-amber-500 to-rose-500 rounded-full" 
+                                            style={{ width: `${Math.min(sig.contribution * 200, 100)}%` }}
+                                          />
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div className="p-3 bg-[#0c111c] rounded-lg border border-slate-800/80 text-xs text-slate-500 font-mono">
+                                    No coercive language patterns detected in transcript.
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Right: Session Metadata & Transcript Context */}
+                              <div className="space-y-3">
+                                <h4 className="text-xs font-mono font-semibold tracking-wider text-slate-400 uppercase flex items-center gap-1.5">
+                                  <Lock className="w-3.5 h-3.5 text-indigo-400" />
+                                  SESSION METADATA & TRANSCRIPT
+                                </h4>
+
+                                <div className="bg-[#0c111c] p-3 rounded-lg border border-slate-800 space-y-2 text-xs font-mono">
+                                  <div className="grid grid-cols-2 gap-2 text-slate-400 pb-2 border-b border-slate-800">
+                                    <div>Claimed Exec: <span className="text-slate-200">{evt.claimed_executive_id || 'N/A'}</span></div>
+                                    <div>Staff ID: <span className="text-slate-200">{evt.requested_by_staff_id || 'N/A'}</span></div>
+                                    <div>Channel: <span className="text-cyan-400">{evt.channel || 'N/A'}</span></div>
+                                    <div>Device: <span className={evt.session_metadata?.is_recognized_device ? "text-emerald-400" : "text-rose-400"}>
+                                      {evt.session_metadata?.device_id || "Unknown"}
+                                    </span></div>
+                                  </div>
+
+                                  <div className="pt-1">
+                                    <div className="text-[11px] text-slate-500 uppercase mb-1">Captured Communication Transcript</div>
+                                    <blockquote className="italic text-slate-300 bg-slate-900/80 p-2.5 rounded border border-slate-800 font-sans">
+                                      "{evt.request_transcript || 'No transcript text available for this request.'}"
+                                    </blockquote>
+                                  </div>
+                                </div>
+                              </div>
+
+                            </div>
+                          </div>
+                        )}
+
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="py-16 text-center space-y-3 bg-[#080c16]">
+                  <RefreshCw className="w-8 h-8 text-cyan-500/60 animate-spin mx-auto" />
+                  <div className="font-mono text-sm text-slate-300 font-semibold">WAITING FOR AUTHORIZATION EVENTS</div>
+                  <p className="text-xs text-slate-500 max-w-sm mx-auto font-mono">
+                    {wsStatus === 'CONNECTED' 
+                      ? 'Listening to live WebSocket stream at ws://localhost:8000/ws...' 
+                      : 'Connecting to backend stream at ws://localhost:8000/ws (backend currently offline)...'}
+                  </p>
+                </div>
+              )}
             </div>
 
           </div>
@@ -553,24 +642,24 @@ export default function App() {
                       <div className="space-y-3 bg-[#080c16] p-4 rounded-lg border border-slate-800 font-mono text-xs">
                         <div className="flex justify-between items-center text-slate-300 border-b border-slate-800/80 pb-2">
                           <span className="text-slate-400">Transaction Type</span>
-                          <span className="font-bold text-white uppercase">{evt.transaction.type.replace('_', ' ')}</span>
+                          <span className="font-bold text-white uppercase">{evt.transaction?.type ? evt.transaction.type.replace('_', ' ') : 'HIGH VALUE TRANSFER'}</span>
                         </div>
                         
                         <div className="flex justify-between items-center text-slate-300 border-b border-slate-800/80 pb-2">
                           <span className="text-slate-400">Transfer Amount</span>
                           <span className="font-bold text-emerald-400 text-sm">
-                            ${evt.transaction.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} {evt.transaction.currency}
+                            ${(evt.transaction?.amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} {evt.transaction?.currency || 'USD'}
                           </span>
                         </div>
 
                         <div className="flex justify-between items-center text-slate-300 border-b border-slate-800/80 pb-2">
                           <span className="text-slate-400">Beneficiary Account</span>
-                          <span className="text-white font-mono">{evt.transaction.beneficiary_account}</span>
+                          <span className="text-white font-mono">{evt.transaction?.beneficiary_account || 'XXXX-9981'}</span>
                         </div>
 
                         <div className="flex justify-between items-center text-slate-300 border-b border-slate-800/80 pb-2">
                           <span className="text-slate-400">Initiating Staff ID</span>
-                          <span className="text-slate-200">{evt.requested_by_staff_id}</span>
+                          <span className="text-slate-200">{evt.requested_by_staff_id || 'staff_042'}</span>
                         </div>
 
                         <div className="pt-1">
@@ -578,7 +667,7 @@ export default function App() {
                             Flagged Call / Communication Transcript
                           </span>
                           <p className="italic text-slate-300 bg-slate-900 p-2.5 rounded border border-slate-800 font-sans text-xs">
-                            "{evt.request_transcript}"
+                            "{evt.request_transcript || 'No transcript text available for this request.'}"
                           </p>
                         </div>
                       </div>
