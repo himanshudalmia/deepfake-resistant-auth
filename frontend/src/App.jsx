@@ -181,8 +181,9 @@ export default function App() {
     };
   }, []);
 
-  // Executive Device Local Action Handler
-  const handleDecision = (requestId, response) => {
+  // Executive Device Action Handler (calls POST /requests/{id}/respond)
+  const handleDecision = async (requestId, response) => {
+    // Immediate optimistic local update
     setEventsById(prev => {
       const existing = prev[requestId];
       if (!existing) return prev;
@@ -191,7 +192,7 @@ export default function App() {
         [requestId]: {
           ...existing,
           challenge_status: response === 'approved' ? 'approved' : 'denied',
-          decision: response === 'approved' ? 'step_up_approved' : 'blocked'
+          decision: response === 'approved' ? 'auto_approve' : 'blocked'
         }
       };
     });
@@ -199,8 +200,50 @@ export default function App() {
     setActionNotification({
       id: requestId,
       response,
-      message: `Challenge ${requestId} ${response.toUpperCase()} via registered device authorization.`
+      message: `Sending ${response.toUpperCase()} out-of-band response to backend for ${requestId}...`
     });
+
+    try {
+      const payload = {
+        request_id: requestId,
+        challenge_code: "482913",
+        response: response,
+        responded_at: new Date().toISOString()
+      };
+
+      const res = await fetch(`http://localhost:8000/requests/${requestId}/respond`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        const updatedEvent = await res.json();
+        if (updatedEvent && updatedEvent.request_id) {
+          upsertEvents(updatedEvent);
+        }
+        setActionNotification({
+          id: requestId,
+          response,
+          message: `Challenge ${requestId} ${response.toUpperCase()} verified & broadcast by backend.`
+        });
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        console.warn('Backend respond endpoint error:', res.status, errData);
+        setActionNotification({
+          id: requestId,
+          response,
+          message: `Challenge ${requestId} ${response.toUpperCase()} (Backend offline / fallback: ${res.status})`
+        });
+      }
+    } catch (err) {
+      console.warn('Network error reaching backend respond endpoint:', err.message);
+      setActionNotification({
+        id: requestId,
+        response,
+        message: `Challenge ${requestId} ${response.toUpperCase()} (Applied locally; backend offline)`
+      });
+    }
 
     setTimeout(() => {
       setActionNotification(null);
